@@ -6,28 +6,28 @@
 
 global:
   resolve_timeout: 5m
-  smtp_smarthost: "smtp.example.com:587"
-  smtp_from: "alerts@example.com"
-  smtp_auth_username: "alerts@example.com"
-  smtp_auth_password: "changeme"
-  smtp_require_tls: false
+  smtp_smarthost: "smtp.gmail.com:587"
+  smtp_from: "chimdi247@gmail.com"
+  smtp_auth_username: "chimdi247@gmail.com"
+  smtp_auth_password: ""
+  smtp_require_tls: true
 
 route:
-  receiver: ops-email
+  receiver: email-alerts
   group_by: ["alertname", "severity"]
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
   routes:
-    - receiver: ops-email
+    - receiver: email-alerts
       matchers:
         - severity = "critical"
       repeat_interval: 1h
 
 receivers:
-  - name: ops-email
+  - name: email-alerts
     email_configs:
-      - to: "admin@example.com"
+      - to: "shimdi247@gmail.com"
         send_resolved: true
 
 inhibit_rules:
