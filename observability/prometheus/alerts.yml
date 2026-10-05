@@ -1,0 +1,67 @@
+groups:
+  - name: resource-utilization
+    rules:
+      - alert: ContainerCPUHigh
+        expr: sum by (name) (rate(container_cpu_usage_seconds_total{name!=""}[5m])) * 100 > 70
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} CPU usage is above 70%"
+          description: >-
+            Container {{ $labels.name }} has averaged over 70% CPU usage for
+            more than 5 minutes.
+
+      - alert: ContainerMemoryHigh
+        # Only meaningful for containers with an explicit memory limit
+        # (docker-compose.yml sets deploy.resources.limits.memory on
+        # every app/data-store service) --
+        # container_spec_memory_limit_bytes is a huge sentinel value
+        # for unlimited containers, which this excludes.
+        expr: >-
+          (container_memory_usage_bytes{name!=""}
+          / on(name) container_spec_memory_limit_bytes{name!="", container_spec_memory_limit_bytes < 1e15})
+          * 100 > 70
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} memory usage is above 70% of its limit"
+          description: >-
+            Container {{ $labels.name }} has used over 70% of its memory
+            limit for more than 5 minutes.
+
+      - alert: NodeCPUHigh
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 70
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.instance }} CPU usage is above 70%"
+          description: >-
+            Host {{ $labels.instance }} has averaged over 70% CPU usage for
+            more than 5 minutes.
+
+      - alert: NodeMemoryHigh
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 70
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node {{ $labels.instance }} memory usage is above 70%"
+          description: >-
+            Host {{ $labels.instance }} has used over 70% of its available
+            memory for more than 5 minutes.
+
+  - name: service-health
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"api-gateway|auth-service|task-service|media-service|workflow-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is down"
+          description: >-
+            Prometheus has been unable to scrape {{ $labels.job }} for more
+            than 2 minutes.

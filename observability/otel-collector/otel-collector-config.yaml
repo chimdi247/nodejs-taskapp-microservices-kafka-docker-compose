@@ -1,0 +1,54 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: docker-compose
+        action: upsert
+
+exporters:
+  # Traces -> Jaeger's native OTLP ingestion endpoint (Jaeger has
+  # accepted OTLP directly since 1.35, no separate jaeger-thrift
+  # exporter needed).
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Logs -> Loki's native OTLP ingestion endpoint. A secondary path
+  # alongside Promtail (which tails every container's stdout directly
+  # -- the primary path, see observability/promtail/promtail-config.yml).
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlp/jaeger, debug]
+
+    logs:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlphttp/loki, debug]
+
+  telemetry:
+    logs:
+      level: info

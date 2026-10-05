@@ -1,0 +1,527 @@
+# Node Microservices - full local stack
+#
+# `docker compose up --build` brings up the app (React frontend + API
+# gateway + auth/task/media/workflow services), Postgres, Kafka (+
+# Kafka UI), MinIO (local S3-compatible storage), and a full
+# observability stack (OpenTelemetry Collector, Prometheus,
+# Alertmanager, Grafana, Loki, Promtail, Jaeger, cAdvisor,
+# node-exporter) -- see README.md, docker/README.md, and
+# observability/README.md.
+
+services:
+  # ============================================
+  # DATA STORES
+  # ============================================
+
+  db:
+    image: postgres:16
+    container_name: nodems-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: nodems
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Creates every table and seeds the admin@example.com login on
+      # first boot. See docker/README.md.
+      - ./docker/init-db:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nodems"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    networks:
+      - nodems-network
+
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: nodems-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    networks:
+      - nodems-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: nodems-kafka-ui
+    restart: unless-stopped
+    ports:
+      - "${KAFKA_UI_PORT:-8080}:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - nodems-network
+
+  # Local, S3-API-compatible object storage -- see .env's comments and
+  # docker/README.md for why this replaces real AWS S3 for local dev.
+  minio:
+    image: minio/minio:latest
+    container_name: nodems-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin123}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      - nodems-network
+
+  # One-shot: creates the bucket and makes it publicly readable (so
+  # <AWS_PUBLIC_URL_S3>/<bucket>/<key> URLs work straight in <img> tags
+  # without pre-signing), then exits.
+  minio-init:
+    image: minio/mc:latest
+    container_name: nodems-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+        mc alias set local http://minio:9000 ${AWS_ACCESS_KEY_ID:-minioadmin} ${AWS_SECRET_ACCESS_KEY:-minioadmin123} &&
+        mc mb --ignore-existing local/${STORAGE_BUCKET:-support-tasks} &&
+        mc anonymous set download local/${STORAGE_BUCKET:-support-tasks}
+      "
+    networks:
+      - nodems-network
+
+  # ============================================
+  # APPLICATION
+  # ============================================
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: api-gateway
+    container_name: nodems-api-gateway
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-3000}:3000"
+    env_file: .env
+    environment:
+      OTEL_SERVICE_NAME: api-gateway
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=nodems
+    depends_on:
+      auth-service:
+        condition: service_healthy
+      task-service:
+        condition: service_healthy
+      media-service:
+        condition: service_healthy
+      workflow-service:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+    networks:
+      - nodems-network
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: auth-service
+    container_name: nodems-auth-service
+    restart: unless-stopped
+    ports:
+      - "${AUTH_PORT:-3001}:3001"
+    env_file: .env
+    environment:
+      OTEL_SERVICE_NAME: auth-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=nodems
+    depends_on:
+      db:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+    networks:
+      - nodems-network
+
+  task-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: task-service
+    container_name: nodems-task-service
+    restart: unless-stopped
+    ports:
+      - "${TASK_PORT:-3002}:3002"
+    env_file: .env
+    environment:
+      OTEL_SERVICE_NAME: task-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=nodems
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3002/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+    networks:
+      - nodems-network
+
+  media-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: media-service
+    container_name: nodems-media-service
+    restart: unless-stopped
+    ports:
+      - "${MEDIA_PORT:-3003}:3003"
+    env_file: .env
+    environment:
+      OTEL_SERVICE_NAME: media-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=nodems
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3003/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+    networks:
+      - nodems-network
+
+  workflow-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: workflow-service
+    container_name: nodems-workflow-service
+    restart: unless-stopped
+    ports:
+      - "${WORKFLOW_PORT:-3004}:3004"
+    env_file: .env
+    environment:
+      OTEL_SERVICE_NAME: workflow-service
+      OTEL_RESOURCE_ATTRIBUTES: service.namespace=nodems
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3004/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 384m
+    networks:
+      - nodems-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Inlined into the bundle at build time. Points at the
+        # gateway's host-published port since the browser calls it
+        # directly, not through the docker network.
+        VITE_API_BASE_URL: http://localhost:${GATEWAY_PORT:-3000}
+    container_name: nodems-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    networks:
+      - nodems-network
+
+  # ============================================
+  # OBSERVABILITY
+  # ============================================
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: nodems-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/otel-collector/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    depends_on:
+      jaeger:
+        condition: service_started
+      loki:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    networks:
+      - nodems-network
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: nodems-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    ports:
+      - "${PROMETHEUS_PORT:-9091}:9090"
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - cadvisor
+      - node-exporter
+      - alertmanager
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      - nodems-network
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: nodems-alertmanager
+    restart: unless-stopped
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    volumes:
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    networks:
+      - nodems-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: nodems-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GF_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    networks:
+      - nodems-network
+
+  loki:
+    image: grafana/loki:latest
+    container_name: nodems-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yaml
+    ports:
+      - "${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./observability/loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+    networks:
+      - nodems-network
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: nodems-promtail
+    restart: unless-stopped
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./observability/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail_data:/var/lib/promtail
+    depends_on:
+      - loki
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    networks:
+      - nodems-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: nodems-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    networks:
+      - nodems-network
+
+  # Per-container CPU/memory/network metrics.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: nodems-cadvisor
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    networks:
+      - nodems-network
+
+  # Host (node) CPU/memory/disk metrics.
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: nodems-node-exporter
+    restart: unless-stopped
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/host/root"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+    networks:
+      - nodems-network
+
+volumes:
+  postgres_data:
+  kafka_data:
+  minio_data:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:
+  loki_data:
+  promtail_data:
+
+networks:
+  nodems-network:
+    driver: bridge
