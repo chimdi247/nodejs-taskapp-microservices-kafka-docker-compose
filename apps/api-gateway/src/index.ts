@@ -34,7 +34,19 @@ const app = express();
 
 //secure default http headers
 app.use(helmet());
-app.use(cors());
+
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "http://localhost:3000",
+    ],
+  //  credentials: true, no cookies
+  }),
+);
+
+
+
 app.use(
   rateLimit({
     windowMs: 15 * MINUTE, // SECOND, MINUTE, HOUR, and DAY constants are available, or a use bare number for milliseconds

@@ -317,7 +317,11 @@ services:
         # Inlined into the bundle at build time. Points at the
         # gateway's host-published port since the browser calls it
         # directly, not through the docker network.
-        VITE_API_BASE_URL: http://localhost:${GATEWAY_PORT:-3000}
+
+        # local
+        #VITE_API_BASE_URL: http://localhost:${GATEWAY_PORT:-3000}
+        ## docker-compose
+        VITE_API_BASE_URL: /api
     container_name: nodems-frontend
     restart: unless-stopped
     ports:
