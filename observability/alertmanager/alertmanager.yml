@@ -9,7 +9,7 @@ global:
   smtp_smarthost: "smtp.gmail.com:587"
   smtp_from: "chimdi247@gmail.com"
   smtp_auth_username: "chimdi247@gmail.com"
-  smtp_auth_password: ""
+  smtp_auth_password: "dzvjhzclrgkx"
   smtp_require_tls: true
 
 route:
