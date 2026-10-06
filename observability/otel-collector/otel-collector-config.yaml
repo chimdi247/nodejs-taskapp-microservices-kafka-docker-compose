@@ -18,21 +18,18 @@ processors:
         action: upsert
 
 exporters:
-  # Traces -> Jaeger's native OTLP ingestion endpoint (Jaeger has
-  # accepted OTLP directly since 1.35, no separate jaeger-thrift
-  # exporter needed).
   otlp/jaeger:
     endpoint: jaeger:4317
     tls:
       insecure: true
 
-  # Logs -> Loki's native OTLP ingestion endpoint. A secondary path
-  # alongside Promtail (which tails every container's stdout directly
-  # -- the primary path, see observability/promtail/promtail-config.yml).
   otlphttp/loki:
     endpoint: http://loki:3100/otlp
     tls:
       insecure: true
+
+  prometheus:
+    endpoint: "0.0.0.0:8889"
 
   debug:
     verbosity: basic
@@ -48,6 +45,11 @@ service:
       receivers: [otlp]
       processors: [resource, batch]
       exporters: [otlphttp/loki, debug]
+
+    metrics:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [prometheus, debug]
 
   telemetry:
     logs:

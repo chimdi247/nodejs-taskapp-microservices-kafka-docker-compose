@@ -19,9 +19,12 @@ groups:
         # container_spec_memory_limit_bytes is a huge sentinel value
         # for unlimited containers, which this excludes.
         expr: >-
-          (container_memory_usage_bytes{name!=""}
-          / on(name) container_spec_memory_limit_bytes{name!="", container_spec_memory_limit_bytes < 1e15})
-          * 100 > 70
+          (
+            container_memory_usage_bytes{name!=""}
+            / on(name) container_spec_memory_limit_bytes{name!=""}
+          ) * 100 > 70
+          and on(name)
+          container_spec_memory_limit_bytes{name!=""} < 1e15
         for: 5m
         labels:
           severity: warning

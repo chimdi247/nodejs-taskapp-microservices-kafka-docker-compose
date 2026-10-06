@@ -89,7 +89,7 @@ services:
   # Local, S3-API-compatible object storage -- see .env's comments and
   # docker/README.md for why this replaces real AWS S3 for local dev.
   minio:
-    image: minio/minio:latest
+    image: elestio/minio:latest
     container_name: nodems-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"
@@ -117,7 +117,7 @@ services:
   # <AWS_PUBLIC_URL_S3>/<bucket>/<key> URLs work straight in <img> tags
   # without pre-signing), then exits.
   minio-init:
-    image: minio/mc:latest
+    image: pgsty/mc:latest
     container_name: nodems-minio-init
     depends_on:
       minio:
@@ -181,8 +181,6 @@ services:
         SERVICE: auth-service
     container_name: nodems-auth-service
     restart: unless-stopped
-    ports:
-      - "${AUTH_PORT:-3001}:3001"
     env_file: .env
     environment:
       OTEL_SERVICE_NAME: auth-service
