@@ -11,51 +11,24 @@ rule_files:
   - /etc/prometheus/alerts.yml
 
 scrape_configs:
+  # Prometheus self-monitoring
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]
 
-  # Every Node service (api-gateway, auth-service, task-service,
-  # media-service, workflow-service) exposes its own Prometheus
-  # exporter via OTEL_METRICS_EXPORTER=prometheus -- see the root
-  # Dockerfile's NODE_OPTIONS and observability/README.md. Scraped
-  # directly (not through the collector) so each gets its own real
-  # up{job="..."} signal.
-  - job_name: api-gateway
+  # Application metrics exposed by the OpenTelemetry Collector.
+  # Node services send OTLP metrics to the collector on :4317,
+  # and the collector exposes Prometheus metrics on :8889.
+  - job_name: otel-collector
     static_configs:
-      - targets: ["api-gateway:9464"]
-        labels: { service: api-gateway }
-
-  - job_name: auth-service
-    static_configs:
-      - targets: ["auth-service:9464"]
-        labels: { service: auth-service }
-
-  - job_name: task-service
-    static_configs:
-      - targets: ["task-service:9464"]
-        labels: { service: task-service }
-
-  - job_name: media-service
-    static_configs:
-      - targets: ["media-service:9464"]
-        labels: { service: media-service }
-
-  - job_name: workflow-service
-    static_configs:
-      - targets: ["workflow-service:9464"]
-        labels: { service: workflow-service }
+      - targets: ["otel-collector:8889"]
 
   # Per-container CPU/memory/network utilization.
   - job_name: cadvisor
     static_configs:
       - targets: ["cadvisor:8080"]
 
-  # Host (node) CPU/memory/disk utilization.
+  # Host CPU/memory/disk utilization.
   - job_name: node-exporter
     static_configs:
       - targets: ["node-exporter:9100"]
-
-  - job_name: otel-collector
-    static_configs:
-      - targets: ["otel-collector:8889"]
